@@ -134,7 +134,10 @@ jobs:
           set -euo pipefail
           VER="${{ inputs.defconfig }}-$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)"
           mkdir -p dist/raw
-          IMG="$(find out/arch/arm64/boot -maxdepth 1 -type f \( -name 'Image.gz-dtb' -o -name 'Image-dtb' -o -name 'Image.gz' -o -name 'Image' \) | sort | head -1)"
+          IMG=""
+          for n in Image.gz-dtb Image-dtb Image.gz Image; do
+            if [ -f "out/arch/arm64/boot/$n" ]; then IMG="out/arch/arm64/boot/$n"; break; fi
+          done
           [ -n "$IMG" ] || { echo "未找到内核镜像"; exit 1; }
           echo "使用镜像: $IMG"
           cp "$IMG" dist/raw/
@@ -171,7 +174,10 @@ jobs:
           print('anykernel.sh 已改写为 nabu')
           PY
 
-          IMG="$(find out/arch/arm64/boot -maxdepth 1 -type f \( -name 'Image.gz-dtb' -o -name 'Image-dtb' -o -name 'Image.gz' -o -name 'Image' \) | sort | head -1)"
+          IMG=""
+          for n in Image.gz-dtb Image-dtb Image.gz Image; do
+            if [ -f "out/arch/arm64/boot/$n" ]; then IMG="out/arch/arm64/boot/$n"; break; fi
+          done
           [ -n "$IMG" ] || { echo "未找到内核镜像"; exit 1; }
           echo "使用镜像: $IMG"
           cp "$IMG" "ak3/$(basename "$IMG")"
