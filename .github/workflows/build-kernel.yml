@@ -103,11 +103,12 @@ jobs:
           export KBUILD_BUILD_USER="${{ github.actor }}"
           export KBUILD_BUILD_HOST="gh-actions"
 
+          df -h / ; free -m
           make -j"$(nproc)" O=out ARCH=arm64 \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- 2>&1 | tee build.log
 
           IMG="$(ls out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image-dtb out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image 2>/dev/null | head -1)"
           if [ -z "$IMG" ]; then echo "未找到内核镜像产物"; ls -l out/arch/arm64/boot/; exit 1; fi
@@ -185,3 +186,13 @@ jobs:
           name: nabu-raw-${{ inputs.defconfig }}
           path: dist/nabu-raw-*.zip
           if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ inputs.defconfig }}
+          path: |
+            build.log
+            out/.config
+          if-no-files-found: ignore
