@@ -109,7 +109,10 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
-          ls -lh out/arch/arm64/boot/Image.gz out/System.map
+          IMG="$(ls out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image-dtb out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image 2>/dev/null | head -1)"
+          if [ -z "$IMG" ]; then echo "未找到内核镜像产物"; ls -l out/arch/arm64/boot/; exit 1; fi
+          echo "KERNEL_IMAGE=$IMG" >> "$GITHUB_ENV"
+          ls -lh "$IMG" out/System.map
 
       - name: Build device tree blobs (best effort)
         continue-on-error: true
@@ -129,7 +132,7 @@ jobs:
           set -euo pipefail
           VER="${{ inputs.defconfig }}-$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)"
           mkdir -p dist/raw
-          cp out/arch/arm64/boot/Image.gz dist/raw/
+          cp "$KERNEL_IMAGE" dist/raw/
           cp out/System.map dist/raw/ || true
           cp out/.config "dist/raw/config-$VER" || true
           if [ -d out/arch/arm64/boot/dts ]; then
@@ -163,7 +166,7 @@ jobs:
           print('anykernel.sh 已改写为 nabu')
           PY
 
-          cp out/arch/arm64/boot/Image.gz ak3/Image.gz
+          cp "$KERNEL_IMAGE" "ak3/$(basename "$KERNEL_IMAGE")"
           (cd ak3 && zip -r9 "../dist/nabu-ak3-$VER.zip" . -x '.git/*')
           ls -lh dist/
 
