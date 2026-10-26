@@ -1,0 +1,187 @@
+name: Build NABU Kernel (SM8150)
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: '选择 defconfig'
+        required: true
+        default: nabu_user_defconfig
+        type: choice
+        options:
+          - nabu_user_defconfig
+          - nabu_debug_defconfig
+          - nabu_stability_defconfig
+      package:
+        description: '打包方式：ak3 = AnyKernel3 卡刷包；raw = 裸产物；both = 两者'
+        required: true
+        default: ak3
+        type: choice
+        options:
+          - ak3
+          - raw
+          - both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nabu-${{ inputs.defconfig }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev libncurses-dev \
+            zip unzip rsync cpio make git curl gcc g++
+
+      - name: Restore toolchains from cache
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tc
+          key: tc-clang-r377782c-gcc49-l19.1-v1
+
+      - name: Fetch toolchains (clang r377782c + GCC 4.9)
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          TC="$RUNNER_TEMP/tc"
+          mkdir -p "$TC"
+
+          # 版本与 build.config.common 的 CLANG_PREBUILT_BIN 对齐
+          git clone --depth 1 --branch 10 \
+            https://github.com/AOSP-10/prebuilts_clang_host_linux-x86_clang-r377782c \
+            "$TC/clang"
+
+          git clone --depth 1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
+            "$TC/gcc-arm64"
+          git clone --depth 1 --branch lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
+            "$TC/gcc-arm"
+
+      - name: Verify toolchains
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/tc/clang/bin:$RUNNER_TEMP/tc/gcc-arm64/bin:$RUNNER_TEMP/tc/gcc-arm/bin:$PATH"
+          clang --version | head -2
+          aarch64-linux-android-gcc --version | head -1
+          arm-linux-androideabi-gcc --version | head -1
+
+      - name: Configure kernel
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/tc/clang/bin:$RUNNER_TEMP/tc/gcc-arm64/bin:$RUNNER_TEMP/tc/gcc-arm/bin:$PATH"
+          export KBUILD_BUILD_USER="${{ github.actor }}"
+          export KBUILD_BUILD_HOST="gh-actions"
+
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            ${{ inputs.defconfig }}
+
+      - name: Build kernel image
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/tc/clang/bin:$RUNNER_TEMP/tc/gcc-arm64/bin:$RUNNER_TEMP/tc/gcc-arm/bin:$PATH"
+          export KBUILD_BUILD_USER="${{ github.actor }}"
+          export KBUILD_BUILD_HOST="gh-actions"
+
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+          ls -lh out/arch/arm64/boot/Image.gz out/System.map
+
+      - name: Build device tree blobs (best effort)
+        continue-on-error: true
+        run: |
+          export PATH="$RUNNER_TEMP/tc/clang/bin:$RUNNER_TEMP/tc/gcc-arm64/bin:$RUNNER_TEMP/tc/gcc-arm/bin:$PATH"
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            dtbs
+          find out/arch/arm64/boot/dts -name '*.dtbo' -o -name '*.dtb' | sort
+
+      - name: Prepare raw artifacts
+        if: inputs.package == 'raw' || inputs.package == 'both'
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.defconfig }}-$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)"
+          mkdir -p dist/raw
+          cp out/arch/arm64/boot/Image.gz dist/raw/
+          cp out/System.map dist/raw/ || true
+          cp out/.config "dist/raw/config-$VER" || true
+          if [ -d out/arch/arm64/boot/dts ]; then
+            find out/arch/arm64/boot/dts \( -name '*.dtbo' -o -name 'sm8150*.dtb' \) \
+              -exec cp {} dist/raw/ \; || true
+          fi
+          ls -lh dist/raw
+          (cd dist/raw && zip -r9 "../nabu-raw-$VER.zip" .)
+
+      - name: Package AnyKernel3 flashable zip
+        if: inputs.package == 'ak3' || inputs.package == 'both'
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.defconfig }}-$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)"
+          mkdir -p dist
+          git clone --depth 1 https://github.com/osm0sis/AnyKernel3.git ak3
+          rm -rf ak3/.git
+
+          python3 - "$VER" <<'PY'
+          import re, sys, pathlib
+          ver = sys.argv[1]
+          p = pathlib.Path('ak3/anykernel.sh')
+          s = p.read_text()
+          s = re.sub(r'^kernel\.string=.*$', f'kernel.string=Nabu SM8150 ({ver})', s, flags=re.M)
+          s = re.sub(r'^device\.name1=.*$', 'device.name1=nabu', s, flags=re.M)
+          s = re.sub(r'^device\.name[2-5]=.*$', lambda m: m.group(0).split('=')[0] + '=', s, flags=re.M)
+          s = re.sub(r'^BLOCK=.*$', 'BLOCK=/dev/block/bootdevice/by-name/boot;', s, flags=re.M)
+          s = re.sub(r'^IS_SLOT_DEVICE=.*$', 'IS_SLOT_DEVICE=0;', s, flags=re.M)
+          s = re.sub(r'^do\.devicecheck=.*$', 'do.devicecheck=1', s, flags=re.M)
+          p.write_text(s)
+          print('anykernel.sh 已改写为 nabu')
+          PY
+
+          cp out/arch/arm64/boot/Image.gz ak3/Image.gz
+          (cd ak3 && zip -r9 "../dist/nabu-ak3-$VER.zip" . -x '.git/*')
+          ls -lh dist/
+
+      - name: Upload AK3 zip
+        if: inputs.package == 'ak3' || inputs.package == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nabu-ak3-${{ inputs.defconfig }}
+          path: dist/nabu-ak3-*.zip
+          if-no-files-found: error
+
+      - name: Upload raw artifacts
+        if: inputs.package == 'raw' || inputs.package == 'both'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nabu-raw-${{ inputs.defconfig }}
+          path: dist/nabu-raw-*.zip
+          if-no-files-found: error
