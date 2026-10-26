@@ -110,10 +110,11 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- 2>&1 | tee build.log
 
-          IMG="$(ls out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image-dtb out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image 2>/dev/null | head -1)"
-          if [ -z "$IMG" ]; then echo "未找到内核镜像产物"; ls -l out/arch/arm64/boot/; exit 1; fi
-          echo "KERNEL_IMAGE=$IMG" >> "$GITHUB_ENV"
-          ls -lh "$IMG" out/System.map
+          {
+            echo "=== make 退出码: $? ==="
+            ls -l out/arch/arm64/boot/ | sed -n '1,40p'
+            ls -l out/System.map 2>&1 || true
+          } | tee -a build.log
 
       - name: Build device tree blobs (best effort)
         continue-on-error: true
@@ -133,7 +134,10 @@ jobs:
           set -euo pipefail
           VER="${{ inputs.defconfig }}-$(date +%Y%m%d%H%M)-$(git rev-parse --short HEAD)"
           mkdir -p dist/raw
-          cp "$KERNEL_IMAGE" dist/raw/
+          IMG="$(find out/arch/arm64/boot -maxdepth 1 -type f \( -name 'Image.gz-dtb' -o -name 'Image-dtb' -o -name 'Image.gz' -o -name 'Image' \) | sort | head -1)"
+          [ -n "$IMG" ] || { echo "未找到内核镜像"; exit 1; }
+          echo "使用镜像: $IMG"
+          cp "$IMG" dist/raw/
           cp out/System.map dist/raw/ || true
           cp out/.config "dist/raw/config-$VER" || true
           if [ -d out/arch/arm64/boot/dts ]; then
@@ -167,7 +171,10 @@ jobs:
           print('anykernel.sh 已改写为 nabu')
           PY
 
-          cp "$KERNEL_IMAGE" "ak3/$(basename "$KERNEL_IMAGE")"
+          IMG="$(find out/arch/arm64/boot -maxdepth 1 -type f \( -name 'Image.gz-dtb' -o -name 'Image-dtb' -o -name 'Image.gz' -o -name 'Image' \) | sort | head -1)"
+          [ -n "$IMG" ] || { echo "未找到内核镜像"; exit 1; }
+          echo "使用镜像: $IMG"
+          cp "$IMG" "ak3/$(basename "$IMG")"
           (cd ak3 && zip -r9 "../dist/nabu-ak3-$VER.zip" . -x '.git/*')
           ls -lh dist/
 
